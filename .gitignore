@@ -1,0 +1,39 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# env / secrets
+.env
+.env.*
+!.env.example
+config.toml
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.nvim/
+
+# logs / dumps
+*.log
+core
+*.dump
+
+# todox runtime
+todox.db
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+data/
+
+# more
+.claude/
