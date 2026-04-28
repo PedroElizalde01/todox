@@ -1,8 +1,10 @@
 # todox
 
-A fast terminal UI for browsing YAML-based todo tickets.
+A fast terminal UI for browsing TOON-based todo tickets.
 
-Tickets live as `.yaml` files in a `.todo/` (or `todo/`) directory. todox renders them as a navigable tree with status, priority, and rich sections — and reloads automatically when files change.
+Tickets live as `.toon` files in a `.todo/` (or `todo/`) directory. todox renders them as a navigable tree with status, priority, and rich sections — and reloads automatically when files change.
+
+[TOON](https://toonformat.dev/) (Token-Oriented Object Notation) is a compact, LLM-friendly format that uses ~40-60% fewer tokens than JSON while staying human-readable. Ideal for agent-written tickets.
 
 ## Install
 
@@ -33,19 +35,18 @@ todo
 
 ## Ticket format
 
-```yaml
+```
 title: Add login flow
 status: in-progress
 priority: high
 estimate: 2d
 description: OAuth + session cookie
-
-sections:
-  - subtitle: Tasks
-    type: checks
-    content:
-      - { checked: true,  text: design schema }
-      - { checked: false, text: write handler }
+sections[1]:
+  subtitle: Tasks
+  type: checks
+  content[2]{checked,text}:
+    true,design schema
+    false,write handler
 ```
 
 ## License

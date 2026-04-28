@@ -45,7 +45,7 @@ struct Section {
     #[serde(default, alias = "type")]
     kind: Option<String>, // text|items|numbered|checks
     #[serde(default)]
-    content: serde_yaml::Value,
+    content: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -74,6 +74,13 @@ struct Ticket {
     children: Vec<Ticket>,
 }
 
+fn parse_toon(txt: &str) -> TicketRaw {
+    let v = toon_format::decode(txt, &toon_format::DecodeOptions::default())
+        .unwrap_or_default();
+    let json: serde_json::Value = v.into();
+    serde_json::from_value(json).unwrap_or_default()
+}
+
 fn find_root(start: &Path) -> Option<PathBuf> {
     for name in [".todo", "todo"] {
         let p = start.join(name);
@@ -92,7 +99,7 @@ fn load_dir(dir: &Path) -> Result<Vec<Ticket>> {
     let mut entries: Vec<_> = fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
 
-    // Map: stem -> (yml_path?, child_dir?)
+    // Map: stem -> (toon_path?, child_dir?)
     use std::collections::BTreeMap;
     let mut map: BTreeMap<String, (Option<PathBuf>, Option<PathBuf>)> = BTreeMap::new();
     for e in entries {
@@ -102,25 +109,25 @@ fn load_dir(dir: &Path) -> Result<Vec<Ticket>> {
             map.entry(name).or_default().1 = Some(path);
         } else if matches!(
             path.extension().and_then(|s| s.to_str()),
-            Some("yml") | Some("yaml")
+            Some("toon")
         ) {
             let stem = path.file_stem().unwrap().to_string_lossy().to_string();
             map.entry(stem).or_default().0 = Some(path);
         }
     }
 
-    for (stem, (yml, sub)) in map {
-        let raw: TicketRaw = if let Some(y) = &yml {
+    for (stem, (toon, sub)) in map {
+        let raw: TicketRaw = if let Some(y) = &toon {
             let txt = fs::read_to_string(y).with_context(|| format!("read {:?}", y))?;
-            serde_yaml::from_str(&txt).unwrap_or_default()
+            parse_toon(&txt)
         } else if let Some(d) = &sub {
-            // folder-only: try index.yml/.yaml
+            // folder-only: try index.toon / _.toon
             let mut r = TicketRaw::default();
-            for n in ["index.yml", "index.yaml", "_.yml", "_.yaml"] {
+            for n in ["index.toon", "_.toon"] {
                 let p = d.join(n);
                 if p.is_file() {
                     if let Ok(txt) = fs::read_to_string(&p) {
-                        r = serde_yaml::from_str(&txt).unwrap_or_default();
+                        r = parse_toon(&txt);
                     }
                     break;
                 }
@@ -140,7 +147,7 @@ fn load_dir(dir: &Path) -> Result<Vec<Ticket>> {
         } else {
             Vec::new()
         };
-        let path = yml.clone().or(sub.clone()).unwrap_or_default();
+        let path = toon.clone().or(sub.clone()).unwrap_or_default();
         out.push(Ticket {
             title,
             path,
@@ -566,7 +573,7 @@ fn draw_detail(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_section(lines: &mut Vec<Line>, sec: &Section) {
-    use serde_yaml::Value;
+    use serde_json::Value;
     let kind = sec.kind.as_deref().unwrap_or("").to_lowercase();
     match &sec.content {
         Value::String(s) => {
@@ -577,7 +584,7 @@ fn render_section(lines: &mut Vec<Line>, sec: &Section) {
                 )));
             }
         }
-        Value::Sequence(seq) => {
+        Value::Array(seq) => {
             let numbered = kind == "numbered" || kind == "ordered";
             for (i, item) in seq.iter().enumerate() {
                 match item {
@@ -592,16 +599,15 @@ fn render_section(lines: &mut Vec<Line>, sec: &Section) {
                             Span::styled(s.clone(), Style::default().fg(Color::White)),
                         ]));
                     }
-                    Value::Mapping(m) => {
-                        // checked item: {checked: bool, text: ...} or {text: ..., done: bool}
+                    Value::Object(m) => {
                         let checked = m
-                            .get(Value::String("checked".into()))
-                            .or_else(|| m.get(Value::String("done".into())))
+                            .get("checked")
+                            .or_else(|| m.get("done"))
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
                         let text = m
-                            .get(Value::String("text".into()))
-                            .or_else(|| m.get(Value::String("title".into())))
+                            .get("text")
+                            .or_else(|| m.get("title"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
@@ -626,7 +632,6 @@ fn render_section(lines: &mut Vec<Line>, sec: &Section) {
         Value::Null => {}
         _ => {}
     }
-    // unused
     let _ = SectionContent::Empty;
     let _ = ItemEntry::Plain(String::new());
 }
