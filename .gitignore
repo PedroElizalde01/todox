@@ -35,5 +35,12 @@ todox.db
 *.sqlite-wal
 data/
 
-# more
+# local agent / AI tooling
 .claude/
+.codex
+CLAUDE.md
+graphify-out/
+
+# local test data
+.todo/
+todo/
