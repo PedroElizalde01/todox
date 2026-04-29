@@ -26,9 +26,21 @@ TUI for browsing TOON- or JSON- based todo tickets
 
 ## Install
 
-`cargo install --path .`
+One-liner (Linux + macOS):
 
-Binary: `todo`
+```sh
+curl -fsSL https://raw.githubusercontent.com/PedroElizalde01/todox/main/install.sh | sh
+```
+
+Installs cargo via rustup if missing, then `cargo install`s the `todo` binary into `~/.cargo/bin`. Override with `TODOX_REF=<branch|tag|sha>`, `TODOX_REPO=<owner/repo>`, or `TODOX_FORCE=1`.
+
+From a local checkout:
+
+```sh
+cargo install --path .
+```
+
+Binary name: `todo`.
 
 ## Commands
 
