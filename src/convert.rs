@@ -131,14 +131,118 @@ fn decode(text: &str, direction: Direction) -> Result<serde_json::Value> {
 
 fn encode(value: &serde_json::Value, direction: Direction) -> Result<String> {
     match direction {
-        Direction::JsonToToon => toon_format::encode_default(value.clone())
-            .map_err(|e| anyhow::anyhow!("toon encode: {e}")),
+        Direction::JsonToToon => encode_toon(value),
         Direction::ToonToJson => {
             let mut out = serde_json::to_string_pretty(value).context("json encode")?;
             out.push('\n');
             Ok(out)
         }
     }
+}
+
+/// Encode JSON to TOON, then patch a known upstream bug (`toon-format` 0.2.4
+/// fails to quote digit-prefix string values like `"5m"`), and validate the
+/// output round-trips back to the source value to catch any other corruption.
+fn encode_toon(value: &serde_json::Value) -> Result<String> {
+    let raw = toon_format::encode_default(value.clone())
+        .map_err(|e| anyhow::anyhow!("toon encode: {e}"))?;
+    let patched = quote_digit_prefix_scalars(&raw);
+
+    let decoded = toon_format::decode(&patched, &toon_format::DecodeOptions::default())
+        .map_err(|e| anyhow::anyhow!("encoded TOON failed to round-trip parse: {e}"))?;
+    if decoded != *value {
+        bail!(
+            "encoded TOON does not round-trip to source value; refusing to write to avoid data loss"
+        );
+    }
+    Ok(patched)
+}
+
+/// Quote any `key: value` line whose bare value starts with a digit and
+/// contains a non-digit character (e.g. `5m`, `1h`, `2d`). Such strings are
+/// mis-tokenized by the TOON parser as `<number><junk>` and cause decode
+/// failures. Lines that already declare an array (`key[N]:`) or are tabular
+/// row data are left alone.
+fn quote_digit_prefix_scalars(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (index, line) in text.lines().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(&maybe_quote_scalar_line(line));
+    }
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn maybe_quote_scalar_line(line: &str) -> String {
+    let trimmed_start = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(trimmed_start);
+
+    // Skip list items and comments — only `key: value` lines are in scope.
+    if rest.starts_with('-') || rest.starts_with('#') {
+        return line.to_string();
+    }
+
+    let Some(colon) = rest.find(':') else {
+        return line.to_string();
+    };
+    let key = &rest[..colon];
+    if key.is_empty() || !key.chars().all(is_key_char) {
+        return line.to_string();
+    }
+    // `key[...]` or `key{...}` mean an array/tabular header — value is structural.
+    if key.contains('[') || key.contains('{') {
+        return line.to_string();
+    }
+
+    let after = &rest[colon + 1..];
+    let value = after.trim_start();
+    if value.is_empty() || value.starts_with('"') {
+        return line.to_string();
+    }
+    if !needs_string_quoting(value) {
+        return line.to_string();
+    }
+
+    let space = if after.starts_with(' ') { " " } else { "" };
+    format!("{indent}{key}:{space}\"{}\"", value.trim_end())
+}
+
+fn is_key_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+/// True if `s` would be parsed as a number-with-junk (e.g. `5m`) by the TOON
+/// decoder but is intended as a string literal.
+fn needs_string_quoting(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_digit() {
+        return false;
+    }
+    let mut saw_letter = false;
+    let mut seen_decimal = false;
+    for c in chars {
+        if c.is_ascii_digit() {
+            continue;
+        }
+        if c == '.' && !seen_decimal {
+            seen_decimal = true;
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            saw_letter = true;
+            continue;
+        }
+        // Anything else (punctuation, spaces) — let the encoder handle it.
+        return false;
+    }
+    saw_letter
 }
 
 /// Write to a temp sibling then rename, so a crash mid-write cannot corrupt the file.
@@ -347,6 +451,45 @@ mod tests {
 
         assert!(dir.join("a.toon").exists());
         assert!(sub.join("b.toon").exists());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn quote_digit_prefix_patches_estimate_value() {
+        let raw = "title: t\nestimate: 5m\nstatus: todo\n";
+        let patched = quote_digit_prefix_scalars(raw);
+        assert!(patched.contains("estimate: \"5m\""), "patched: {patched}");
+        assert!(patched.contains("title: t"));
+    }
+
+    #[test]
+    fn quote_digit_prefix_leaves_pure_numbers_alone() {
+        let raw = "count: 42\nratio: 1.5\n";
+        let patched = quote_digit_prefix_scalars(raw);
+        assert_eq!(patched, raw);
+    }
+
+    #[test]
+    fn quote_digit_prefix_skips_array_headers() {
+        let raw = "items[3]:\n  - one\n  - two\n  - three\n";
+        let patched = quote_digit_prefix_scalars(raw);
+        assert_eq!(patched, raw);
+    }
+
+    #[test]
+    fn round_trip_with_digit_prefix_string() {
+        let dir = temp_dir();
+        let json = dir.join("a.json");
+        fs::write(&json, r#"{"title":"X","estimate":"5m","status":"todo"}"#).unwrap();
+
+        run(Direction::JsonToToon, args(dir.clone())).unwrap();
+
+        let toon = fs::read_to_string(dir.join("a.toon")).unwrap();
+        let decoded = toon_format::decode(&toon, &toon_format::DecodeOptions::default()).unwrap();
+        assert_eq!(decoded["estimate"], "5m");
+        assert_eq!(decoded["title"], "X");
+        assert_eq!(decoded["status"], "todo");
 
         let _ = fs::remove_dir_all(dir);
     }

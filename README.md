@@ -41,6 +41,24 @@ Disable auto-reload watch:
 
 `todo --no-watch`
 
+## Convert
+
+`todo json-toon [PATH] [FLAGS]` (alias `j2t`) — convert `.json` tickets to `.toon`. Source files removed unless `--keep`.
+`todo toon-json [PATH] [FLAGS]` (alias `t2j`) — reverse direction.
+
+`PATH` may be a single file or a directory (recursed). When omitted, the nearest `.todo/` or `todo/` under cwd is used.
+
+Flags:
+
+| Flag | Meaning |
+|------|--------|
+| `-n`, `--dry-run` | Preview without writing or deleting |
+| `-k`, `--keep` | Keep source file after successful conversion |
+| `-f`, `--force` | Overwrite destination if it already exists |
+| `-q`, `--quiet` | Suppress per-file output |
+
+Conversions write atomically (temp file + rename) and the JSON→TOON path validates that the encoded output round-trips back to the source value before writing — so a corruption bug in the encoder cannot silently destroy data.
+
 ## Keys
 
 | Key | Action |
