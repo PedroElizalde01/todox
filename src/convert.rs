@@ -158,23 +158,164 @@ fn encode_toon(value: &serde_json::Value) -> Result<String> {
     Ok(patched)
 }
 
-/// Quote any `key: value` line whose bare value starts with a digit and
-/// contains a non-digit character (e.g. `5m`, `1h`, `2d`). Such strings are
-/// mis-tokenized by the TOON parser as `<number><junk>` and cause decode
-/// failures. Lines that already declare an array (`key[N]:`) or are tabular
-/// row data are left alone.
+/// Patch known under-quoting bugs in `toon-format` 0.2.4 so output round-trips
+/// through the strict decoder. Three contexts get fixed:
+///
+/// 1. `key: value` scalar lines where `value` starts with digit + letter
+///    (`5m`, `2d`) → quote the whole value.
+/// 2. Tabular rows under `key[N]{cols}:` where any cell contains a space,
+///    comma, `--`, or matches the digit-prefix pattern → quote the cell.
+/// 3. Inline primitive arrays `key[N]: a,b,c` with the same cell hazards →
+///    quote each unsafe cell.
 fn quote_digit_prefix_scalars(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for (index, line) in text.lines().enumerate() {
-        if index > 0 {
-            out.push('\n');
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out_lines: Vec<String> = Vec::with_capacity(lines.len());
+    let mut tabular_remaining: usize = 0;
+
+    for line in &lines {
+        if tabular_remaining > 0 {
+            out_lines.push(quote_tabular_row(line));
+            tabular_remaining -= 1;
+            continue;
         }
-        out.push_str(&maybe_quote_scalar_line(line));
+
+        if let Some(count) = parse_tabular_header(line) {
+            out_lines.push((*line).to_string());
+            tabular_remaining = count;
+            continue;
+        }
+
+        if let Some(fixed) = patch_inline_array(line) {
+            out_lines.push(fixed);
+            continue;
+        }
+
+        out_lines.push(maybe_quote_scalar_line(line));
     }
+
+    let mut out = out_lines.join("\n");
     if text.ends_with('\n') {
         out.push('\n');
     }
     out
+}
+
+/// If the line is `key[N]{cols}:` (tabular header), return N. Trailing data
+/// after the colon is rare for headers — treated as no header to stay safe.
+fn parse_tabular_header(line: &str) -> Option<usize> {
+    let rest = line.trim_start();
+    let lbrack = rest.find('[')?;
+    let key = &rest[..lbrack];
+    if key.is_empty() || !key.chars().all(is_key_char) {
+        return None;
+    }
+    let after_lbrack = &rest[lbrack + 1..];
+    let rbrack = after_lbrack.find(']')?;
+    let count: usize = after_lbrack[..rbrack].parse().ok()?;
+    let after_rbrack = after_lbrack[rbrack + 1..].trim_start();
+    if !after_rbrack.starts_with('{') {
+        return None;
+    }
+    let after_lbrace = &after_rbrack[1..];
+    let rbrace = after_lbrace.find('}')?;
+    let after_rbrace = after_lbrace[rbrace + 1..].trim_start();
+    if !after_rbrace.starts_with(':') {
+        return None;
+    }
+    // Trailing payload on header (rare) — bail out, let validation catch it.
+    if !after_rbrace[1..].trim().is_empty() {
+        return None;
+    }
+    Some(count)
+}
+
+fn quote_tabular_row(line: &str) -> String {
+    let trimmed_start = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(trimmed_start);
+    let cells = split_csv_cells(rest);
+    let quoted: Vec<String> = cells.iter().map(|c| quote_cell_if_unsafe(c)).collect();
+    format!("{indent}{}", quoted.join(","))
+}
+
+/// Match `key[N]: a,b,c` (inline primitive array) and quote unsafe cells.
+/// Returns `None` for non-matching lines so the caller can fall through.
+fn patch_inline_array(line: &str) -> Option<String> {
+    let trimmed_start = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(trimmed_start);
+    let lbrack = rest.find('[')?;
+    let key = &rest[..lbrack];
+    if key.is_empty() || !key.chars().all(is_key_char) {
+        return None;
+    }
+    let after_lbrack = &rest[lbrack + 1..];
+    let rbrack = after_lbrack.find(']')?;
+    after_lbrack[..rbrack].parse::<usize>().ok()?;
+    let after_rbrack = after_lbrack[rbrack + 1..].trim_start();
+    // Tabular headers handled separately.
+    if after_rbrack.starts_with('{') {
+        return None;
+    }
+    if !after_rbrack.starts_with(':') {
+        return None;
+    }
+    let payload = after_rbrack[1..].trim_start();
+    if payload.is_empty() {
+        return None;
+    }
+    let cells = split_csv_cells(payload);
+    let quoted: Vec<String> = cells.iter().map(|c| quote_cell_if_unsafe(c)).collect();
+    let header = &rest[..rest.len() - after_rbrack.len()];
+    Some(format!("{indent}{header}: {}", quoted.join(",")))
+}
+
+/// Split a CSV-like row, respecting `"..."` quoted cells. Backslash escapes
+/// inside quotes are preserved verbatim (matches TOON's tolerant tokenizer).
+fn split_csv_cells(s: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                in_quote = !in_quote;
+                current.push(c);
+            }
+            '\\' if in_quote => {
+                current.push(c);
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            ',' if !in_quote => {
+                cells.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    cells.push(current);
+    cells
+}
+
+fn quote_cell_if_unsafe(cell: &str) -> String {
+    let trimmed = cell.trim();
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        return cell.to_string();
+    }
+    if trimmed.is_empty() || !cell_needs_quoting(trimmed) {
+        return cell.to_string();
+    }
+    let escaped = trimmed.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+/// True if `s` cannot be parsed as a bare cell in tabular/inline-array context.
+fn cell_needs_quoting(s: &str) -> bool {
+    if s.contains(' ') || s.contains('\t') || s.contains(',') || s.contains("--") || s.contains(':')
+    {
+        return true;
+    }
+    needs_string_quoting(s)
 }
 
 fn maybe_quote_scalar_line(line: &str) -> String {
@@ -475,6 +616,57 @@ mod tests {
         let raw = "items[3]:\n  - one\n  - two\n  - three\n";
         let patched = quote_digit_prefix_scalars(raw);
         assert_eq!(patched, raw);
+    }
+
+    #[test]
+    fn quote_unsafe_tabular_cells() {
+        let raw = "rows[2]{a,b}:\n  1,Long titles may wrap badly\n  2,short\n";
+        let patched = quote_digit_prefix_scalars(raw);
+        assert!(
+            patched.contains("\"Long titles may wrap badly\""),
+            "patched: {patched}"
+        );
+        assert!(patched.contains("2,short"));
+        let decoded =
+            toon_format::decode(&patched, &toon_format::DecodeOptions::default()).unwrap();
+        assert_eq!(decoded["rows"][0]["b"], "Long titles may wrap badly");
+    }
+
+    #[test]
+    fn quote_unsafe_inline_array_cells() {
+        let raw = "items[2]: Long titles may wrap badly,short\n";
+        let patched = quote_digit_prefix_scalars(raw);
+        assert!(patched.contains("\"Long titles may wrap badly\""));
+        let decoded =
+            toon_format::decode(&patched, &toon_format::DecodeOptions::default()).unwrap();
+        assert_eq!(decoded["items"][0], "Long titles may wrap badly");
+        assert_eq!(decoded["items"][1], "short");
+    }
+
+    #[test]
+    fn round_trip_with_multiword_array_strings() {
+        let dir = temp_dir();
+        let json = dir.join("a.json");
+        fs::write(
+            &json,
+            r#"{"title":"X","sections":[{"subtitle":"Risks","content":["Long titles may wrap badly","Deep nesting may need scroll support"]}]}"#,
+        )
+        .unwrap();
+
+        run(Direction::JsonToToon, args(dir.clone())).unwrap();
+
+        let toon = fs::read_to_string(dir.join("a.toon")).unwrap();
+        let decoded = toon_format::decode(&toon, &toon_format::DecodeOptions::default()).unwrap();
+        assert_eq!(
+            decoded["sections"][0]["content"][0],
+            "Long titles may wrap badly"
+        );
+        assert_eq!(
+            decoded["sections"][0]["content"][1],
+            "Deep nesting may need scroll support"
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

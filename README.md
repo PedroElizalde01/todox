@@ -27,56 +27,61 @@ Terminal UI for browsing TOON- or JSON-based todo tickets.
 
 Binary: `todo`
 
-## Usage
+## Commands
 
-Run inside project containing `.todo/` or `todo/` directory:
+### TUI (default)
 
-`todo`
+| Command | Effect |
+|---|---|
+| `todo` | Browse `.todo/` or `todo/` under cwd |
+| `todo PATH` | Browse the given dir or project root |
+| `todo --no-watch` | Disable filesystem auto-reload |
+| `todo -h` / `--help` | Help |
+| `todo -V` / `--version` | Version |
 
-Use custom root:
+### Convert
 
-`todo /path/to/project`
+| Command | Effect |
+|---|---|
+| `todo json-toon` (alias `j2t`) | Convert `.json` → `.toon` in nearest todo dir |
+| `todo json-toon PATH` | Convert single file or recurse a directory |
+| `todo toon-json` (alias `t2j`) | Reverse direction |
+| `todo toon-json PATH` | Same on the given path |
 
-Disable auto-reload watch:
+Convert flags (apply to both directions):
 
-`todo --no-watch`
-
-## Convert
-
-`todo json-toon [PATH] [FLAGS]` (alias `j2t`) — convert `.json` tickets to `.toon`. Source files removed unless `--keep`.
-`todo toon-json [PATH] [FLAGS]` (alias `t2j`) — reverse direction.
-
-`PATH` may be a single file or a directory (recursed). When omitted, the nearest `.todo/` or `todo/` under cwd is used.
-
-Flags:
-
-| Flag | Meaning |
-|------|--------|
+| Flag | Effect |
+|---|---|
 | `-n`, `--dry-run` | Preview without writing or deleting |
 | `-k`, `--keep` | Keep source file after successful conversion |
 | `-f`, `--force` | Overwrite destination if it already exists |
 | `-q`, `--quiet` | Suppress per-file output |
+| `-h`, `--help` | Subcommand help |
 
-Conversions write atomically (temp file + rename) and the JSON→TOON path validates that the encoded output round-trips back to the source value before writing — so a corruption bug in the encoder cannot silently destroy data.
+Conversions write atomically (temp file + rename) and the JSON→TOON path validates that the encoded output round-trips back to the source value before writing — so an encoder bug cannot silently destroy data.
 
-## Keys
+### TUI keybindings (in-app)
 
 | Key | Action |
-|-----|--------|
+|---|---|
 | `j` / `↓` | Down |
 | `k` / `↑` | Up |
-| `l` / `→` / `Enter` | Open |
+| `l` / `→` / `Enter` | Open / drill in |
 | `h` / `←` / `Backspace` | Back |
 | `r` | Reload |
-| `q` / `Esc` | Back / Quit |
+| `q` / `Esc` | Back, then quit at root |
 | `Q` | Force quit |
 
-## Dev
+### Dev
 
-- `cargo fmt`
-- `cargo clippy --all-targets --all-features`
-- `cargo test`
-- `cargo run -- --help`
+| Command | Effect |
+|---|---|
+| `cargo build` | Build debug |
+| `cargo run -- ...` | Run with args |
+| `cargo test` | Run tests |
+| `cargo fmt` | Format |
+| `cargo clippy --all-targets --all-features` | Lint |
+| `cargo install --path .` | Install `todo` binary |
 
 ## Ticket files
 
